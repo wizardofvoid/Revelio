@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scan report — {{ target_url }}</title>
+  {% if standalone %}
+    {# Downloaded copy has to stand alone, so the CSS is inlined. #}
+    {# |safe because this is our own stylesheet, never user input; autoescaping
+       it would mangle CSS selectors like "a > b". #}
+    <style>{{ inline_css|safe }}</style>
+  {% else %}
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  {% endif %}
+</head>
+<body>
+  <main class="wrap">
+    <h1>Scan report</h1>
+    <p class="lead">
+      <span class="target">{{ target_url }}</span><br>
+      Scanned {{ scanned_at }}
+    </p>
+
+    <div class="summary">
+      <span class="pill pill-fail">{{ summary.failed }} failed</span>
+      <span class="pill pill-pass">{{ summary.passed }} passed</span>
+      {% if summary.errored %}
+        <span class="pill pill-error">{{ summary.errored }} could not run</span>
+      {% endif %}
+    </div>
+
+    {% for finding in results %}
+      <section class="finding finding-{{ finding.status }}">
+        <header>
+          <h3>{{ finding.name }}</h3>
+          <span class="badge badge-{{ finding.status }}">{{ finding.status|upper }}</span>
+          <span class="badge sev sev-{{ finding.severity }}">{{ finding.severity }}</span>
+        </header>
+        <dl>
+          <dt>What we found</dt><dd>{{ finding.detail }}</dd>
+          <dt>Why it matters</dt><dd>{{ finding.risk }}</dd>
+          <dt>How to fix it</dt><dd>{{ finding.fix }}</dd>
+        </dl>
+      </section>
+    {% endfor %}
+
+    {% if not standalone %}
+      <div class="actions">
+        <form method="post" action="{{ url_for('export') }}">
+          {# forceescape is required: |tojson returns Markup, which autoescaping
+             leaves alone, so its quotes would terminate the value attribute. #}
+          <input type="hidden" name="results_json"
+                 value="{{ {'target_url': target_url,
+                            'scanned_at': scanned_at,
+                            'results': results}|tojson|forceescape }}">
+          <button type="submit">Download report</button>
+        </form>
+        <a class="secondary" href="{{ url_for('index') }}">Scan another target</a>
+      </div>
+    {% endif %}
+  </main>
+</body>
+</html>

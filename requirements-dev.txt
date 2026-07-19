@@ -1,0 +1,4 @@
+# Test-only dependencies. Install with:  pip install -r requirements-dev.txt
+# The runtime deps in requirements.txt are enough to run the scanner itself.
+-r requirements.txt
+pytest>=8.0
