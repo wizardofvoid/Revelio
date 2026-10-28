@@ -44,6 +44,21 @@
       </section>
     {% endfor %}
 
+    {# Stated on the report itself, not just in the docs: a reader looking at
+       five green rows needs to know what was never tested. #}
+    <section class="limits">
+      <h2>What this scan did not cover</h2>
+      <ul>
+        <li>Only the single URL above was tested — the scanner does not follow
+          links, so other pages may have findings this report doesn't show.</li>
+        <li>Pages behind a login were not reached, and forms built by JavaScript
+          are invisible to it.</li>
+        <li>SQL injection is detected only when the app leaks a database error;
+          blind and filtered injection would not show up here.</li>
+        <li>Only reflected XSS is tested — not stored or DOM-based XSS.</li>
+      </ul>
+    </section>
+
     {% if not standalone %}
       <div class="actions">
         <form method="post" action="{{ url_for('export') }}">

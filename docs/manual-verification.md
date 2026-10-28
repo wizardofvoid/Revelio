@@ -13,8 +13,18 @@ that every finding the scanner raises is a genuine weakness.
 
 ## What the scanner reported
 
-Two scans cover all five checks (the scanner inspects one URL at a time and does
-not crawl, so the forms live at `/login` and the listing at the root):
+The scanner inspects one URL at a time and does not crawl, so which page you
+point it at decides what it can see. Scanning the login page reaches all five:
+
+**Scan of `http://127.0.0.1:8000/login`** — `5 failed, 0 passed`
+
+| Result | Severity | Check |
+|--------|----------|-------|
+| FAIL | high | Security headers |
+| FAIL | medium | Software version leakage |
+| FAIL | medium | Directory listing exposure *(`/uploads/`)* |
+| FAIL | high | SQL injection *(fields `username`, `password`)* |
+| FAIL | high | Reflected XSS *(fields `username`, `password`)* |
 
 **Scan of `http://127.0.0.1:8000/`** — `3 failed, 2 passed`
 
@@ -26,17 +36,22 @@ not crawl, so the forms live at `/login` and the listing at the root):
 | PASS | low | SQL injection *(no forms on this page)* |
 | PASS | low | Reflected XSS *(no forms on this page)* |
 
-**Scan of `http://127.0.0.1:8000/login`** — `4 failed, 1 passed`
+The two PASS rows on the root scan are honest: that page really has no form to
+test. They are a reminder that a clean row means "not found on this URL", not
+"not present on this site".
 
-| Result | Severity | Check |
-|--------|----------|-------|
-| FAIL | high | Security headers |
-| FAIL | medium | Software version leakage |
-| FAIL | high | SQL injection *(fields `username`, `password`)* |
-| FAIL | high | Reflected XSS *(fields `username`, `password`)* |
-| PASS | low | Directory listing *(none under `/login`)* |
+> **Note on an earlier version of this document.** The `/login` scan used to
+> report directory listing as a PASS, and that PASS was wrong. The scanner built
+> its probe URLs by string concatenation, so a page-level target made it request
+> `/login/admin/`, `/login/uploads/` and so on — paths that exist nowhere. It
+> reported "none returned a file listing" having looked in the wrong place
+> entirely. Absolute paths are now resolved against the site root, `/uploads/`
+> is found from either target, and there is a regression test for it
+> (`tests/test_http.py`, `tests/test_dir_listing.py`). A check that reports a
+> clean result having tested nothing is the exact failure mode this project
+> already guards against elsewhere — it had simply gone unnoticed here.
 
-Each is reproduced by hand below.
+Each finding is reproduced by hand below.
 
 ---
 
@@ -125,10 +140,19 @@ The tags come back **verbatim** — `<script>`, not the escaped `&lt;script&gt;`
 A browser loading this would execute `alert(1)`. **Confirmed.**
 
 This is also the check most prone to false positives, so the negative case
-matters: the scanner only flags XSS when the raw payload is present **and** its
-escaped form is absent. An app that returns `&lt;script&gt;` is *not* flagged
-(verified separately in `tests/` against an escaping app). So this finding means
-"reflected and unescaped", not merely "reflected".
+matters: the scanner flags XSS only when the payload comes back with its markup
+characters intact. An app that returns `&lt;script&gt;` never contains the raw
+`<script>` substring, so it is *not* flagged (verified separately in `tests/`
+against an escaping app). This finding therefore means "reflected and
+unescaped", not merely "reflected".
+
+The check used to demand something stricter — that no escaped copy of the
+payload appear *anywhere* on the page — and that extra condition was silently
+wrong. Most apps re-populate the box you typed in, escaped, so a page that
+reflected the payload raw in its body *and* echoed an escaped copy into its own
+input field cancelled itself out and was reported safe. The condition also
+protected nothing the substring test didn't already cover. It has been removed
+and both directions are now pinned by tests (`tests/test_xss.py`).
 
 **Why it matters:** any script an attacker puts in the URL runs in the victim's
 browser — session theft, defacement, credential capture.

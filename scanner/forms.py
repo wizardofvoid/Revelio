@@ -13,11 +13,39 @@ from scanner import http
 
 # Input types we submit payloads into. Buttons, checkboxes, files etc. are
 # skipped -- they don't take free text and aren't where injection lives.
-TEXTY_TYPES = {"text", "search", "email", "url", "tel", "password", "textarea", ""}
+TEXTY_TYPES = {"text", "search", "email", "url", "tel", "password", "textarea"}
 
 # Types we send back with a harmless placeholder so the form validates, but
-# never inject into. hidden/submit carry values the app expects unchanged.
-PASSTHROUGH_TYPES = {"hidden", "submit", "button", "radio", "checkbox"}
+# never inject into. hidden/submit carry values the app expects unchanged, and
+# a <select> is a fixed list of options rather than a free-text field -- feeding
+# it a payload only inflated the "tested N fields" count with fields that can't
+# take one.
+PASSTHROUGH_TYPES = {"hidden", "submit", "button", "radio", "checkbox", "select"}
+
+# The SQLi and XSS checks are handed the same target URL and both need its
+# forms. Without this they fetched and re-parsed the page once each. Keyed by
+# URL and cleared per scan by run_all_checks, so results are never stale.
+_form_cache = {}
+
+
+def clear_cache():
+    """Forget parsed forms. Called once per scan so a re-scan sees the page as
+    it is now, not as it was."""
+    _form_cache.clear()
+
+
+def _field_descriptor(field):
+    """Read one <input>/<textarea>/<select> into {name, type, value}."""
+    if field.name == "textarea":
+        return "textarea", field.get_text() or ""
+    if field.name == "select":
+        # Submit the first option so required-field validation passes.
+        option = field.find("option")
+        if option is None:
+            return "select", ""
+        value = option.get("value")
+        return "select", value if value is not None else option.get_text(strip=True)
+    return (field.get("type") or "text").strip().lower(), field.get("value") or ""
 
 
 def parse_forms(page_url):
@@ -27,6 +55,9 @@ def parse_forms(page_url):
                    inputs: [{name, type, value}], texty_names: [str]}
     Forms with no named field we can inject into are dropped.
     """
+    if page_url in _form_cache:
+        return _form_cache[page_url]
+
     response = http.get(page_url)
     soup = BeautifulSoup(response.text, "html.parser")
     forms = []
@@ -44,12 +75,7 @@ def parse_forms(page_url):
             if not name:
                 continue  # unnamed fields aren't submitted by the browser
 
-            ftype = (
-                "textarea"
-                if field.name == "textarea"
-                else (field.get("type") or "text").strip().lower()
-            )
-            value = field.get("value") or ""
+            ftype, value = _field_descriptor(field)
             inputs.append({"name": name, "type": ftype, "value": value})
             if ftype in TEXTY_TYPES:
                 texty_names.append(name)
@@ -64,6 +90,7 @@ def parse_forms(page_url):
                 }
             )
 
+    _form_cache[page_url] = forms
     return forms
 
 

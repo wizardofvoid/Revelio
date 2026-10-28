@@ -21,11 +21,14 @@ website you don't have permission to test.
   for on-page display and the saved HTML report
 
 ## Environment / commands
-- **Use a venv** — `python -m venv .venv` then activate it. Installing into the
-  global environment downgraded `requests` and broke unrelated packages
-  (`langchain-community`, `prawcore`) once already.
-- Install deps: `pip install -r requirements.txt`
-- Run dev server: `python app.py` (serves on `http://localhost:5000`)
+- **Use the venv.** `.venv/` now exists and is gitignored; everything below
+  assumes it. Never `pip install` into the global environment — doing so once
+  downgraded `requests` and broke unrelated packages (`langchain-community`,
+  `prawcore`). Recreate with `python -m venv .venv` if it's missing.
+- Install deps: `.venv/Scripts/python -m pip install -r requirements-dev.txt`
+  (that pulls in `requirements.txt` too; drop the `-dev` for runtime only)
+- Run dev server: `.venv/Scripts/python app.py` (serves on `http://localhost:5000`).
+  Set `SCANNER_DEBUG=0` to run without the Werkzeug debugger.
 - Run a practice target separately before scanning: `python practice_target/app.py`
   (serves on `http://127.0.0.1:8000`). See `practice_target/README.md`.
 - **`npx juice-shop` does not work** — the npm package was unpublished in 2019.
@@ -43,6 +46,7 @@ website you don't have permission to test.
 ├── scanner/
 │   ├── __init__.py        # CHECKS registry + run_all_checks() + summarise()
 │   ├── http.py            # shared Session: get/post, timeout, TargetUnreachable, join()
+│   ├── severity.py        # ORDER + worst(); the one place severities are ranked
 │   ├── forms.py           # BeautifulSoup form parsing + submit(), shared by sqli/xss
 │   ├── headers_check.py   # missing/misconfigured security headers
 │   ├── sqli_check.py      # basic SQL injection payload testing on forms
@@ -54,7 +58,10 @@ website you don't have permission to test.
 │   └── report.html        # scan results, reused for on-page view and saved export
 ├── static/
 │   └── style.css
-├── requirements.txt
+├── tests/                 # pytest suite (45 tests); conftest.py resets shared state
+├── docs/manual-verification.md   # findings reproduced by hand
+├── requirements.txt       # runtime deps only
+├── requirements-dev.txt   # adds pytest
 └── README.md
 ```
 
@@ -122,10 +129,21 @@ this is what makes it more than "just running a script."
   Project is complete.
 
 ## Current status
-**Project complete — all four weeks done.** All five checks send real requests
-and work. Scanning `http://127.0.0.1:8000/login` on the practice target produces
-four real failures (headers, version, SQLi, XSS) and one pass (dir listing — no
-listing under that path). Scanning the root additionally catches `/uploads/`.
+**Project complete — all four weeks done, plus a bug-fix pass.** All five checks
+send real requests and work. Scanning `http://127.0.0.1:8000/login` on the
+practice target now produces **five failures out of five** (headers, version,
+directory listing, SQLi, XSS). Scanning the root gives 3 failed / 2 passed — the
+two passes are honest, that page has no form to test.
+
+The bug-fix pass (see the two bullets about XSS and `join()` below) fixed three
+defects, two of which made the scanner report vulnerable things as safe:
+- the XSS check passed a genuinely vulnerable app whenever the page also echoed
+  an escaped copy of the payload — which most apps do
+- `http.join()` built probe paths by concatenation, so a page-level target made
+  the directory-listing check look under `/login/admin/` and report nothing found
+- `/export` returned HTTP 500 on any malformed payload
+
+Test count went 18 → 45 covering these. Suite runs in a `.venv`.
 
 Week 4 deliverables:
 - `docs/manual-verification.md` — all five findings reproduced by hand with real
@@ -133,19 +151,26 @@ Week 4 deliverables:
   "penetration testing" requirement.
 - `tests/` — pytest suite covering the bug-catching cases (SPA-200-everywhere,
   dead target, useless header value, XSS/SQLi false-positive guards, exact-vs-
-  bare version). Run: `pip install -r requirements-dev.txt && python -m pytest`.
-  18 tests, all green. Test deps are in `requirements-dev.txt` (kept out of the
-  runtime `requirements.txt`). ~40s wall time because two dead-target tests make
-  real refused connections (Windows drops the SYN, ~2s each) — not a hang.
+  bare version). Started at 18 tests; **now 45** after the bug-fix pass added
+  regression cover for `join()`, `/export` and the XSS false negative. Test deps
+  are in `requirements-dev.txt` (kept out of the runtime `requirements.txt`).
+  ~47s wall time because two dead-target tests make real refused connections
+  (Windows drops the SYN, ~2s each) — not a hang.
 - README setup section fixed: it told users to run `npx juice-shop` / DVWA-in-
   Docker (neither works here); now points at `practice_target/`.
 
-Everything routes through two shared modules — don't reimplement per check:
+Everything routes through three shared modules — don't reimplement per check:
 - `scanner/http.py` — `get()`/`post()`, 8s timeout, TLS verification off for
-  self-signed practice targets, `TargetUnreachable` for readable errors.
+  self-signed practice targets, `TargetUnreachable` for readable errors,
+  `join()` for probe URLs, and a 2 MB body cap so a huge response can't
+  exhaust memory.
+- `scanner/severity.py` — `worst()`. Use it rather than re-declaring a rank map.
 - `scanner/forms.py` — `parse_forms()` returns each form's absolute action,
   method and text fields; `submit()` fills one field with a payload and the
-  rest with placeholders, so a hit points at a specific field.
+  rest with placeholders, so a hit points at a specific field. Results are
+  cached per URL so SQLi and XSS don't fetch the same page twice;
+  `run_all_checks` clears the cache (and the cookie jar) at the start of each
+  scan, so nothing carries over between scans.
 
 Nothing is stubbed anymore.
 
@@ -156,25 +181,42 @@ Nothing is stubbed anymore.
   the earlier MySQL/Oracle-only list matched nothing the practice target emits.
   Error-based only; blind/filtered injection is out of scope and the pass text
   says so.
-- **XSS** requires the payload to come back *unescaped* — raw substring present
-  **and** its entity-encoded form absent. An app that reflects `&lt;script&gt;`
-  is escaping correctly and is NOT flagged. This is what stops the check
-  false-positiving on every app that echoes input. Verified against a Flask app
-  using `markupsafe.escape` — correctly passes.
+- **XSS** requires the payload to come back *unescaped* — i.e. the raw substring
+  is present in the response. An app that reflects `&lt;script&gt;` doesn't
+  contain the raw `<script>`, so it is NOT flagged; that single substring test
+  is the entire false-positive guard. Verified against a Flask app using
+  `markupsafe.escape` — correctly passes.
+  **Do not re-add an "and the escaped form is absent" condition.** It was there,
+  it protected nothing the substring test didn't already cover, and it caused
+  false negatives: most apps re-populate the submitted value into the input box
+  escaped, so a page reflecting the payload raw *and* echoing an escaped copy
+  into its sticky field cancelled itself out and came back PASS. Pinned by
+  `tests/test_xss.py::test_raw_reflection_still_flagged_when_page_also_escapes_elsewhere`.
 
 ## Testing
-There is no test suite in the repo yet — Phases 0 and 1 were verified with
-throwaway scripts and a fake target built on `http.server`. If you add tests,
-the three cases that actually caught bugs were:
+`tests/` holds a pytest suite — **45 tests, all green**, ~47s wall time.
+Run: `.venv/Scripts/python -m pytest` (deps in `requirements-dev.txt`).
+
+Every test spins up a throwaway `http.server` target on an ephemeral port. The
+cases that actually caught bugs:
 - a target serving 200 for *every* path (SPA shell), which must **not** be
   reported as a directory listing
 - a target that is completely down, which must produce `error` findings and
   never a clean "pass"
 - a header present but set to a useless value (`X-Content-Type-Options: sniff`)
+- a vulnerable app that reflects a payload raw **and** echoes an escaped copy
+  into its own sticky input — must still be flagged (see XSS below)
+- a page-level target (`/login`), whose absolute probe paths must resolve to the
+  site root, not to `/login/admin/`
+- `/export` fed malformed JSON, which must render a report rather than 500
 
-Note: a Flask-based fake target can't spoof the `Server` header — Werkzeug
-overwrites it after `after_request`. Use `http.server` and override
-`version_string()`.
+Two notes for anyone adding tests:
+- A Flask-based fake target can't spoof the `Server` header — Werkzeug
+  overwrites it after `after_request`. Use `http.server` and override
+  `version_string()`.
+- `conftest.py` has an autouse fixture clearing the form cache and cookie jar
+  between tests. Both are module-level state; ephemeral ports get reused, so
+  without it a test can be served another test's cached forms.
 
 ## Behaviour decided while implementing Phase 1
 - **A check that can't reach the target must raise, not return pass.**
@@ -188,8 +230,15 @@ overwrites it after `after_request`. Use `http.server` and override
 - **Version check distinguishes `Apache/2.2.3` from bare `nginx`.** An exact
   version is a medium finding; a product name with no version is a pass with
   a note, not a finding.
-- **XSS (Week 3):** check the payload comes back *unescaped* — raw substring
-  present **and** `&lt;script&gt;` absent — not merely present at all.
+- **XSS (Week 3):** check the payload comes back *unescaped* — the raw substring
+  present in the body. (This originally also required the escaped form to be
+  absent; see "How the two form checks decide" for why that was removed.)
+- **Probe paths resolve against the site root, not below the target page.**
+  `http.join()` parses the URL: `/login` + `/admin/` is `/admin/`, not
+  `/login/admin/`, while a `/dvwa/` mount point is still preserved. It was
+  string concatenation, which made the directory-listing check probe paths that
+  existed nowhere and report a clean pass — the same "reported healthy having
+  tested nothing" failure as the bullet above, in a different check.
 
 ## Conventions
 - Each check lives in its own file under `scanner/`, exposes one function
@@ -211,3 +260,9 @@ overwrites it after `after_request`. Use `http.server` and override
 - `/scan` blocks targets that don't resolve to a loopback/private address
   unless a permission checkbox is ticked. Soft guard, not a hard block, so
   scanning a VM on the LAN still works.
+- `/export` is the only route taking arbitrary input, so it trusts none of it.
+  `_clean_findings()` in `app.py` drops anything that isn't a well-formed
+  finding and defaults unknown status/severity values — otherwise an unknown
+  status reaches the template as a CSS class (`finding-banana`), and a
+  truncated payload used to be a 500. `summarise()` uses `.get("status")` for
+  the same reason.

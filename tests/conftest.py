@@ -4,6 +4,24 @@ import socket
 
 import pytest
 
+from scanner import forms, http
+
+
+@pytest.fixture(autouse=True)
+def fresh_scan_state():
+    """Give every test the clean slate `run_all_checks` gives every scan.
+
+    The form cache and the cookie jar are module-level and outlive one test.
+    Tests bind ephemeral ports, so the OS can hand the same port to a later
+    test's server -- without this, that test would be served a cached form list
+    parsed from a completely different target.
+    """
+    forms.clear_cache()
+    http.reset_session()
+    yield
+    forms.clear_cache()
+    http.reset_session()
+
 
 @pytest.fixture
 def dead_url():

@@ -131,5 +131,11 @@ dd { margin: 0; }
   dt { margin-top: .4rem; }
 }
 
+/* Scope caveats: present but visibly secondary to the findings themselves. */
+.limits { margin-top: 2rem; color: var(--muted); font-size: .9rem; }
+.limits h2 { font-size: .82rem; text-transform: uppercase; letter-spacing: .02em; margin-bottom: .5rem; }
+.limits ul { margin: 0; padding-left: 1.2rem; }
+.limits li { margin-bottom: .3rem; }
+
 .actions { display: flex; align-items: center; gap: 1rem; margin-top: 1.75rem; }
 .secondary { color: var(--muted); font-size: .9rem; }

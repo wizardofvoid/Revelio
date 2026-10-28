@@ -1,6 +1,7 @@
 """Check 4: directory listing exposed at common paths."""
 
 from scanner import http
+from scanner.severity import worst
 
 CHECK_NAME = "Directory listing exposure"
 
@@ -24,7 +25,6 @@ LISTING_SIGNATURES = [
     "[to parent directory]",  # IIS
 ]
 
-SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
 MAX_BODY = 4096  # signatures all appear near the top; don't scan whole files
 
 
@@ -59,7 +59,7 @@ def run(target_url):
         )
 
     if exposed:
-        severity = sorted(exposed, key=lambda e: SEVERITY_RANK[e[1]])[0][1]
+        severity = worst([s for _, s in exposed])
         paths = ", ".join(p for p, _ in exposed)
         return {
             "name": CHECK_NAME,
@@ -73,7 +73,12 @@ def run(target_url):
         }
 
     checked = len(COMMON_PATHS) - unreachable
-    detail = f"Checked {checked} common paths ({', '.join(COMMON_PATHS)}); none returned a file listing."
+    # Name the base actually probed: for a page-level target like /login these
+    # paths are resolved against the directory it sits in, not below the page.
+    detail = (
+        f"Checked {checked} common paths under {http.join(target_url, '/')} "
+        f"({', '.join(COMMON_PATHS)}); none returned a file listing."
+    )
     if unreachable:
         detail += f" {unreachable} path(s) could not be reached."
 

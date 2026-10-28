@@ -42,6 +42,19 @@ def test_real_listing_is_flagged():
     assert "/uploads/" in result["detail"]
 
 
+def test_page_level_target_still_finds_a_root_listing():
+    """Regression: scanning a form URL used to probe '/login/uploads/'.
+
+    The paths are absolute, so they belong to the site root -- a target of
+    '/login' must still find '/uploads/', not silently report nothing found.
+    """
+    routes = {"/login": (200, "<p>Login</p>"), "/uploads/": (200, REAL_LISTING)}
+    with serve(make_handler(routes)) as base:
+        result = dir_listing_check.run(f"{base}/login")
+    assert result["status"] == "fail", result["detail"]
+    assert "/uploads/" in result["detail"]
+
+
 def test_403_forbidden_is_not_a_listing():
     """A 403 on the path is access control working, not exposure."""
     routes = {p: (403, "Forbidden") for p in dir_listing_check.COMMON_PATHS}

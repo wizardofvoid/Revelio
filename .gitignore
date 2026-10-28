@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environment (CLAUDE.md: always install into a venv, never globally --
+# a global install once downgraded requests and broke unrelated packages)
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+
+# Machine-local Claude Code settings; the shared .claude/settings.json is tracked
+.claude/settings.local.json
+
+# Downloaded scan reports, if saved into the project directory
+scan-report-*.html

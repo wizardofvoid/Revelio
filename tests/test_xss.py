@@ -50,6 +50,35 @@ def test_unescaped_reflection_is_flagged():
     assert "'q'" in result["detail"]
 
 
+def _sticky_raw_search(handler):
+    """Reflect q raw AND echo an escaped copy into the sticky input value.
+
+    This is what most frameworks do -- re-populate the box the user typed in --
+    and it used to hide the vulnerability completely: the check demanded that no
+    escaped copy of the payload appear anywhere on the page, so the sticky field
+    cancelled out the real, raw reflection above it and the app came back PASS.
+    """
+    value = _q(handler)
+    escaped = (
+        value.replace("&", "&amp;").replace("<", "&lt;")
+        .replace(">", "&gt;").replace('"', "&quot;")
+    )
+    return 200, (
+        f"<p>No results for: {value}</p>"
+        f'<form method="get" action="/search">'
+        f'<input type="text" name="q" value="{escaped}"></form>'
+    )
+
+
+def test_raw_reflection_still_flagged_when_page_also_escapes_elsewhere():
+    """Regression: an escaped copy elsewhere must not cancel a raw reflection."""
+    routes = {"/": (200, FORM_PAGE), "/search": _sticky_raw_search}
+    with serve(make_handler(routes)) as base:
+        result = xss_check.run(base)
+    assert result["status"] == "fail", result["detail"]
+    assert "'q'" in result["detail"]
+
+
 def test_no_forms_is_a_pass():
     """A page with no forms has nothing to test -> pass, not error."""
     routes = {"/": (200, "<p>no forms here</p>")}

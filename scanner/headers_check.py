@@ -3,6 +3,7 @@
 from urllib.parse import urlparse
 
 from scanner import http
+from scanner.severity import worst
 
 CHECK_NAME = "Security headers"
 
@@ -35,12 +36,6 @@ EXPECTED_VALUES = {
     "X-Content-Type-Options": ["nosniff"],
     "X-Frame-Options": ["deny", "sameorigin"],
 }
-
-SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
-
-
-def _worst(severities):
-    return sorted(severities, key=lambda s: SEVERITY_RANK[s])[0]
 
 
 def run(target_url):
@@ -101,7 +96,7 @@ def run(target_url):
     if present:
         parts.append(f"Correctly set: {', '.join(present)}.")
 
-    severity = _worst([s for _, s in missing] + [s for _, _, s in weak])
+    severity = worst([s for _, s in missing] + [s for _, _, s in weak])
     fixes = [REQUIRED_HEADERS[h][2] for h, _ in missing]
     fixes += [REQUIRED_HEADERS[h][2] for h, _, _ in weak]
 

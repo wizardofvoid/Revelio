@@ -7,7 +7,9 @@ freely and the scan still completes with a "check failed to run" result.
 
 from scanner import (
     dir_listing_check,
+    forms,
     headers_check,
+    http,
     sqli_check,
     version_check,
     xss_check,
@@ -22,8 +24,6 @@ CHECKS = [
     xss_check,
 ]
 
-SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
-
 
 def run_all_checks(target_url):
     """Run every check against target_url and return a list of finding dicts.
@@ -31,6 +31,11 @@ def run_all_checks(target_url):
     Each finding has: name, status (pass/fail/error), severity (low/medium/high),
     detail, risk, fix.
     """
+    # Both are module-level and outlive a single scan, so clear them here rather
+    # than leaking cookies and a stale form list into the next one.
+    http.reset_session()
+    forms.clear_cache()
+
     results = []
     for check in CHECKS:
         try:
@@ -52,9 +57,11 @@ def run_all_checks(target_url):
 
 def summarise(results):
     """Counts for the report header."""
+    # .get() rather than [] -- /export re-summarises findings posted back from
+    # the browser, and a hand-edited payload must not turn into a 500.
     return {
         "total": len(results),
-        "failed": sum(1 for r in results if r["status"] == "fail"),
-        "passed": sum(1 for r in results if r["status"] == "pass"),
-        "errored": sum(1 for r in results if r["status"] == "error"),
+        "failed": sum(1 for r in results if r.get("status") == "fail"),
+        "passed": sum(1 for r in results if r.get("status") == "pass"),
+        "errored": sum(1 for r in results if r.get("status") == "error"),
     }

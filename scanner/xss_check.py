@@ -25,18 +25,19 @@ XSS_PAYLOADS = [
 
 
 def _reflected_unescaped(payload, body):
-    """True if payload appears raw AND wasn't entity-escaped on the way out."""
-    if payload not in body:
-        return False
-    # If the same content also appears HTML-escaped, the app is escaping and
-    # the raw hit is a coincidence (or a different context) -- don't flag.
-    escaped = (
-        payload.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )
-    return escaped not in body
+    """True if the payload comes back with its markup characters intact.
+
+    An app that escapes its output never contains the raw payload at all -- it
+    contains ``&lt;script&gt;...``, which is not a substring match. So this one
+    test is the whole false-positive guard.
+
+    This deliberately does NOT also require the escaped form to be absent from
+    the page. That extra condition used to be here and it silently cancelled
+    real findings: most apps re-populate the submitted value back into the input
+    box escaped, so a page that reflected the payload raw *and* echoed an
+    escaped copy into its sticky field was reported as safe.
+    """
+    return payload in body
 
 
 def run(target_url):

@@ -10,12 +10,17 @@ standalone HTML file.
 
 ## Setup
 
+Install into a virtual environment, not globally:
+
 ```
+python -m venv .venv
+.venv\Scripts\activate          # Windows;  source .venv/bin/activate on macOS/Linux
 pip install -r requirements.txt
 python app.py
 ```
 
-Then open <http://localhost:5000>.
+Then open <http://localhost:5000>. The dev server binds to `127.0.0.1` only;
+set `SCANNER_DEBUG=0` to run it without the Werkzeug debugger.
 
 A practice target needs to be running separately. This repo ships a small
 deliberately-vulnerable app for exactly that — no Docker or npm needed:
@@ -24,9 +29,9 @@ deliberately-vulnerable app for exactly that — no Docker or npm needed:
 python practice_target/app.py    # http://127.0.0.1:8000
 ```
 
-Then scan `http://127.0.0.1:8000` (and `http://127.0.0.1:8000/login` for the
-form-based checks). See `practice_target/README.md` for what's vulnerable and
-why the usual suspects (Juice Shop, DVWA) aren't used here.
+Then scan `http://127.0.0.1:8000/login`, which trips all five checks. See
+`practice_target/README.md` for what's vulnerable and why the usual suspects
+(Juice Shop, DVWA) aren't used here.
 
 ## The five checks
 
@@ -67,12 +72,17 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
+45 tests, ~47s (two of them make real refused connections to prove a dead target
+errors rather than passing; on Windows each takes ~2s to give up — not a hang).
+
 The suite (in `tests/`) spins up throwaway `http.server` targets and checks the
-cases that actually caught bugs during development: an SPA returning 200 for
-every path (must **not** be reported as a directory listing), a completely-down
-target (must error, never a clean pass), a security header set to a useless
-value, the XSS false-positive guard against an escaping app, and the
-exact-version-vs-bare-name distinction.
+cases that actually caught bugs: an SPA returning 200 for every path (must
+**not** be reported as a directory listing), a completely-down target (must
+error, never a clean pass), a security header set to a useless value, the XSS
+guard in *both* directions (an escaping app must pass, and a vulnerable app must
+still be flagged even when the page also echoes an escaped copy), probe paths
+resolving against the site root rather than below a page, `/export` surviving
+malformed input, and the exact-version-vs-bare-name distinction.
 
 ## Manual verification
 
@@ -81,10 +91,19 @@ practice target (including carrying the SQL injection through to a working auth
 bypass) — the "penetration testing" step that confirms the scanner's findings
 are real, not artefacts of the matching logic.
 
+## Known limits
+
+The report says this too, but so it's clear up front — the scanner tests **one
+URL**, the one you give it. It does not crawl, cannot log in, and cannot see
+forms built by JavaScript. SQL injection is detected only when the app leaks a
+database error (not blind or filtered injection), and only *reflected* XSS is
+tested, not stored or DOM-based. A PASS means "not found on this URL", never
+"this site is secure".
+
 ## Status
 
 **Complete.** All five checks send real requests; the form → scan → report →
-download flow works; the scanner finds real vulnerabilities in
-`practice_target/` and correctly reports an escaped/safe app clean. Covered by
-an automated test suite (`tests/`) and a by-hand verification writeup
+download flow works; scanning `practice_target/login` reports 5 failures out of
+5, and an escaped/safe app is correctly reported clean. Covered by an automated
+test suite (`tests/`, 45 tests) and a by-hand verification writeup
 (`docs/manual-verification.md`).
