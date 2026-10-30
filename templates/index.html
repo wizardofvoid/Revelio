@@ -14,11 +14,6 @@
       severity-rated report.
     </p>
 
-    <div class="warning">
-      <strong>Only scan targets you own or that exist for testing</strong>
-      (DVWA, OWASP Juice Shop). This tool sends real attack payloads.
-    </div>
-
     {% if error %}
       <div class="error">{{ error }}</div>
     {% endif %}
@@ -28,13 +23,6 @@
       <input type="text" id="target_url" name="target_url"
              value="{{ target_url or '' }}"
              placeholder="http://localhost:8080" autofocus required>
-
-      {% if needs_confirmation %}
-        <label class="checkbox">
-          <input type="checkbox" name="permission_confirmed">
-          I have permission to scan this target.
-        </label>
-      {% endif %}
 
       <button type="submit">Scan</button>
     </form>

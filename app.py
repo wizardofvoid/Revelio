@@ -3,10 +3,8 @@
 Run with:  python app.py   ->  http://localhost:5000
 """
 
-import ipaddress
 import json
 import os
-import socket
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -36,20 +34,7 @@ def normalise_url(raw):
         raise ValueError("Only http:// and https:// targets are supported.")
     if not parsed.hostname:
         raise ValueError(f"Could not read a hostname from {raw!r}.")
-    return raw, parsed.hostname
-
-
-def is_local_target(hostname):
-    """True if the hostname resolves to loopback or a private network.
-
-    Scanning sends real attack payloads, so anything outside a network you
-    control needs the user to explicitly confirm they have permission.
-    """
-    try:
-        addr = ipaddress.ip_address(socket.gethostbyname(hostname))
-    except (socket.gaierror, ValueError):
-        return False
-    return addr.is_loopback or addr.is_private
+    return raw
 
 
 @app.route("/")
@@ -60,22 +45,9 @@ def index():
 @app.route("/scan", methods=["POST"])
 def scan():
     try:
-        target_url, hostname = normalise_url(request.form.get("target_url"))
+        target_url = normalise_url(request.form.get("target_url"))
     except ValueError as exc:
         return render_template("index.html", error=str(exc)), 400
-
-    confirmed = request.form.get("permission_confirmed") == "on"
-    if not is_local_target(hostname) and not confirmed:
-        return (
-            render_template(
-                "index.html",
-                error=f"{hostname} is not a local or private address. Tick the "
-                "permission box to scan it anyway.",
-                target_url=target_url,
-                needs_confirmation=True,
-            ),
-            400,
-        )
 
     results = run_all_checks(target_url)
     return render_template(

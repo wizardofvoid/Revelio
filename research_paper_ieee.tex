@@ -1,0 +1,439 @@
+\documentclass[conference]{IEEEtran}
+
+\usepackage[T1]{fontenc}
+\usepackage{cite}
+\usepackage{url}
+\usepackage{array}
+
+\title{A Modular Scanner for Security Headers, Version Disclosure, Directory Listings, SQL Injection, and Reflected XSS}
+
+\author{
+\IEEEauthorblockN{Ayush Saraf}
+\IEEEauthorblockA{Vellore Institute of Technology\\
+ayush.saraf2023@vitstudent.ac.in}
+\and
+\IEEEauthorblockN{Shlok Lobhas Ghadekar}
+\IEEEauthorblockA{Vellore Institute of Technology\\
+shlok.lobhas2023@vitstudent.ac.in}
+\and
+\IEEEauthorblockN{Ankush}
+\IEEEauthorblockA{Vellore Institute of Technology\\
+ankush.2023@vitstudent.ac.in}
+}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This paper presents a small Flask web application that runs five HTTP-based
+security checks against a URL entered by the user. The checks look for missing
+or weak response headers, exact software versions in headers, browsable
+directories, database errors caused by form input, and unescaped reflected
+markup. SQL injection and XSS checks share an HTML form parser; all five use a
+common HTTP client. In the project’s manual verification record, the local
+practice target produced five findings at \texttt{/login}. A scan of its root
+page produced three findings; the SQL injection and XSS checks had no form to
+test there. The repository documents 45 automated tests for positive, negative,
+and error cases. These results show that the scanner works on its included
+practice target and fixtures. They do not establish accuracy on other sites.
+The scanner does not crawl, authenticate, run JavaScript, detect blind SQL
+injection, or test stored and DOM-based XSS.
+\end{abstract}
+
+\begin{IEEEkeywords}
+web application security, vulnerability scanning, SQL injection, reflected
+cross-site scripting, HTTP security headers, security misconfiguration
+\end{IEEEkeywords}
+
+\section{Introduction}
+Web applications expose endpoints that accept user input and return content to
+browsers. A small scanner can help a student see how a request becomes a test
+and how a response becomes a finding. This project focuses on five such tests:
+three inspect headers or common paths, while two submit payloads through forms
+found in the returned HTML. The checks address a narrow part of the risks
+described in OWASP guidance for injection and security misconfiguration
+\cite{owaspTop10,wstgSQLi,wstgXSS}; they are not a substitute for the broader
+testing procedures in that guidance.
+
+The scanner is a local Flask application. It accepts one HTTP or HTTPS URL and
+executes five checks against the supplied page and a small set of common paths.
+Two checks submit data to forms found in the returned HTML. Three inspect
+response headers or bodies. Results appear in a report that gives the evidence,
+severity, risk, and a suggested fix. A separate practice application supplies
+known vulnerable behaviors so the end-to-end workflow can be tested without
+relying on a changing external target.
+
+The project was shaped by two practical questions: can five simple rules find
+known behaviors in a deliberately vulnerable local application, and can
+regression tests guard against specific mistakes in those rules? The
+implementation brings the checks together through a coordinator, a shared
+HTTP client, and a shared parser for HTML forms. A separate local target makes
+the demonstration repeatable. The evaluation uses that target and the test
+fixtures only; it does not estimate detection accuracy on arbitrary websites.
+
+The remainder of the paper describes related testing guidance, the scanner
+architecture, each detection rule, the development defects that informed the
+regression tests, and the results documented for the practice target. It ends
+with limitations and practical extensions.
+
+\section{Background and Related Guidance}
+The OWASP Top 10 groups injection and security misconfiguration among major
+web-application risk categories \cite{owaspTop10}. The OWASP Web Security
+Testing Guide describes testing approaches for SQL injection and reflected XSS
+\cite{wstgSQLi,wstgXSS}. This project implements simplified response-based
+probes inspired by these categories; it does not implement the full testing
+procedures in that guide.
+
+Alazmi and Conte de Leon reviewed published work on web application
+vulnerability scanners and found that quantitative effectiveness evaluations
+were limited and used differing approaches \cite{alazmi}. Their review
+underscores why a scanner demonstration should not be confused with a
+comparative performance study. Ibrahim and Rosli compare three tools for SQL
+injection detection on predefined applications and report accuracy and response
+time measures \cite{ibrahim}. The present project follows a smaller,
+development-oriented approach: it checks known behaviors on its own practice
+target and regression fixtures, without comparing scanner products or claiming
+general detection rates.
+
+HTTP response headers can communicate browser-enforced policy. Content Security
+Policy (CSP) defines restrictions on resources a page may load or execute
+\cite{csp3}. HTTP Strict Transport Security (HSTS) lets a site direct user
+agents to use secure connections for a host \cite{rfc6797}. Other headers,
+including \texttt{X-Frame-Options} and
+\texttt{X-Content-Type-Options}, provide additional browser-side protections
+when configured appropriately \cite{owaspHeaders}. The scanner treats the
+presence and selected values of these headers as configuration signals; it
+does not prove that the application's complete security policy is effective.
+
+\section{System Architecture}
+The system has four layers, shown in Fig.~\ref{fig:architecture}. The browser submits a target URL to the Flask
+application in \texttt{app.py}. The application validates the URL scheme and
+hostname shape, then calls \texttt{run\_all\_checks} in
+\texttt{scanner/\_\_init\_\_.py}. The coordinator executes the registered
+check modules in sequence and catches exceptions independently, producing an
+\texttt{error} finding if one check cannot complete. The results are summarized
+and rendered by the report template. An export route sanitizes posted finding
+fields and returns a standalone HTML report with embedded CSS.
+
+All checks use the shared HTTP module, \texttt{scanner/http.py}, which sets a
+request timeout, a scanner user-agent, and a response-body size cap. Form-based
+checks use \texttt{scanner/forms.py} to parse server-returned HTML with
+BeautifulSoup and submit one field at a time. The form cache and HTTP-session
+cookies are cleared before each scan. The check list is maintained in one
+coordinator, while check-specific payloads, signatures, and finding logic stay
+inside their respective modules.
+
+\begin{figure}[!t]
+\centering
+\footnotesize
+\begin{tabular}{c}
+Browser submits URL\\
+$\downarrow$\\
+Flask input validation and scan route\\
+$\downarrow$\\
+Scanner coordinator: five independent checks\\
+$\swarrow$ \hspace{0.2em} Shared HTTP layer \hspace{0.2em} $\searrow$\\
+Target responses \hspace{1em} Shared HTML form parser\\
+$\downarrow$\\
+Findings, summary, report page, and HTML export
+\end{tabular}
+\caption{High-level scan and reporting flow.}
+\label{fig:architecture}
+\end{figure}
+
+\section{Implementation Refinements}
+Several regression cases in the repository correspond to concrete defects in
+earlier implementations. They are useful to explain because they show how a
+response-based scanner can report an incorrect result even when its payload
+is reasonable.
+
+\subsection{Database-Specific Error Signatures}
+The SQL injection detector originally lacked signatures for the error wording
+returned by the practice target's SQLite database. In that state, a quote
+payload could break the query while the scanner reported no match. The current
+signature set includes SQLite messages such as \texttt{unrecognized token} and
+syntax errors near a token, alongside signatures for other database families.
+The regression target emits the SQLite error and verifies that the SQL
+injection check reports it. A second target safely escapes the submitted input
+and is expected to pass.
+
+\subsection{Path Resolution and Directory-Listing Classification}
+Concatenating the submitted page URL with a probe path caused a target such as
+\texttt{/login} to produce invalid probes beneath that page, such as
+\texttt{/login/uploads/}. The shared \texttt{http.join} routine now removes
+query strings and fragments and resolves the common probe paths against the
+site's directory base. The directory check also requires both an HTTP 200
+response and a listing signature in the body. This second condition matters
+for single-page applications or catch-all routes that return their normal
+shell with status 200 for every path. Regression tests cover a real listing, a
+page-level target, a 403 response, and a 200-everywhere application shell.
+
+\subsection{Reflected-XSS False-Negative Guard}
+An earlier XSS condition required an escaped copy of the payload to be absent
+from the entire response. That condition could cancel a real finding when a
+page reflected the payload raw in its message and also placed an escaped copy
+in a sticky form field. The current check looks for the submitted payload as a
+raw substring; a correctly escaped response does not contain that raw markup.
+Tests cover escaped reflection, raw reflection, raw reflection accompanied by
+an escaped duplicate elsewhere, and a page with no forms. This rule reduces
+one identified false-negative case, but it remains a heuristic: it does not
+parse the browser execution context or execute the resulting page.
+
+\subsection{Scan Isolation and Failure Reporting}
+The request session and parsed-form cache are process-level objects. The
+coordinator clears both at the beginning of each scan so cookies and cached
+forms do not carry over between targets. It catches exceptions for each check
+separately and returns an \texttt{error} finding, allowing the remaining checks
+to complete. A regression case for a down target ensures connection failure
+is reported as an error rather than a clean pass.
+
+\section{Detection Methods}
+Each check returns a dictionary containing a name, status, severity, detail,
+risk, and suggested fix. Status is one of \texttt{pass}, \texttt{fail}, or
+\texttt{error}. Severity is assigned using the project's check-specific rules;
+it is not a calibrated measure of exploitability.
+
+\subsection{Security Response Headers}
+The header check sends a GET request and inspects the response for CSP, HSTS,
+\texttt{X-Frame-Options}, and \texttt{X-Content-Type-Options}. It flags missing
+headers and validates selected values: \texttt{X-Frame-Options} must be
+\texttt{DENY} or \texttt{SAMEORIGIN}, while
+\texttt{X-Content-Type-Options} must be \texttt{nosniff}. HSTS is skipped when
+the final response uses HTTP because browsers do not apply the HSTS policy from
+an insecure HTTP response \cite{rfc6797}. This is a header-level check and does
+not evaluate the quality of a full CSP policy.
+
+\subsection{Software-Version Disclosure}
+The version check inspects \texttt{Server}, \texttt{X-Powered-By},
+\texttt{X-AspNet-Version}, and \texttt{X-Generator}. A regular expression
+searches for a product followed by a dotted version number, such as
+\texttt{Apache/2.2.8}; a bare product name does not trigger the exact-version
+finding. This check identifies selected header disclosures and does not
+fingerprint software through other response features.
+
+\subsection{Directory-Listing Exposure}
+The directory check requests six common paths: \texttt{/admin/},
+\texttt{/backup/}, \texttt{/uploads/}, \texttt{/files/}, \texttt{/images/},
+and \texttt{/.git/}. A response is reported only when it has status 200 and
+its first 4096 characters contain a known listing signature, such as
+\texttt{Index of /} or \texttt{Parent Directory}. Redirects are not followed
+for these probes so a redirect to a login page is not treated as an exposed
+listing. The check does not discover arbitrary directories or filenames.
+
+\subsection{Error-Based SQL Injection}
+The shared form parser finds named text-like inputs in static HTML forms and
+records each form's method and action. The SQL injection check submits four
+basic strings to each injectable field and searches response text for database
+error signatures associated with MySQL, Oracle, SQL Server, PostgreSQL, and
+SQLite. A matching error produces a high-severity finding. The detector is
+limited to visible errors; it does not infer boolean, time-based, or other blind
+injection behavior.
+
+\subsection{Reflected Cross-Site Scripting}
+The XSS check submits three markup-bearing payload forms to each text field,
+using a marker to make the test reflection recognizable. It reports a finding
+when the submitted payload appears in the response body with its markup intact.
+This is a lightweight reflection heuristic, not a browser-based execution
+test. It therefore does not establish that the payload executes in every
+browser context and does not inspect stored content or client-side DOM flows.
+
+\section{Controlled Demonstration and Evaluation}
+\subsection{Test Environment and Procedure}
+The project includes a scanner app and a separate Flask practice target. The
+scanner's local development server uses port 5000; the practice target uses
+port 8000 and binds to the loopback interface. The practice target stores two
+demonstration users in an in-memory SQLite database. It intentionally returns
+database errors, reflects input in selected forms, omits selected response
+headers, advertises sample version strings, and returns an index-like response
+at \texttt{/uploads/}.
+
+The manual verification record, dated July 20, 2026, scans the login page and
+the root page as separate targets. The login page contains text fields and
+exercises the form-based checks. The root page has no form, so its two form
+check passes mean only that there was no input to submit on that page. The guide
+also records HTTP responses inspected with \texttt{curl} and a manual
+reproduction of the SQL injection behavior. Automated tests use temporary
+HTTP-server fixtures for controlled positive, negative, and error responses.
+The README lists 45 tests covering these behaviors and report export
+\cite{projectReadme,manualVerification}.
+
+\subsection{Observed Results}
+The project verification record reports five failed checks and no passes for
+\texttt{/login}. The findings are consistent with the practice target's
+intentional configuration and route behavior. For \texttt{/}, three checks
+fail and two form checks pass because no forms exist on that page. Those two
+passes are scoped observations, not evidence that the entire practice site is
+free of injection vulnerabilities.
+
+\begin{table}[!t]
+\caption{Documented Scan Outcomes}
+\label{tab:results}
+\centering
+\footnotesize
+\begin{tabular}{|p{0.18\columnwidth}|p{0.20\columnwidth}|p{0.50\columnwidth}|}
+\hline
+\textbf{Target} & \textbf{Summary} & \textbf{Interpretation} \\
+\hline
+\texttt{/login} & 5 fail, 0 pass & All five configured checks return a finding on the demonstration page or its common-path probes. \\
+\hline
+\texttt{/} & 3 fail, 2 pass & SQL injection and XSS pass because this page has no forms to submit to. \\
+\hline
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:checks} connects the five reported findings with the evidence
+recorded in the manual verification guide.
+\begin{table}[!t]
+\caption{Finding Evidence on the Practice Target}
+\label{tab:checks}
+\centering
+\footnotesize
+\begin{tabular}{|p{0.31\columnwidth}|p{0.57\columnwidth}|}
+\hline
+\textbf{Check} & \textbf{Documented evidence} \\
+\hline
+Security headers & CSP, X-Frame-Options, and X-Content-Type-Options are absent. \\
+\hline
+Version disclosure & Response headers identify Apache 2.2.8 and PHP 5.4.45. \\
+\hline
+Directory listing & \texttt{/uploads/} returns an index-like listing. \\
+\hline
+SQL injection & A quote in a login field causes a SQLite error; the manual guide records an authentication-bypass demonstration. \\
+\hline
+Reflected XSS & Test markup is returned raw in selected form responses. \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Regression Coverage and Interpretation}
+The regression suite is designed to distinguish selected vulnerable behaviors
+from common benign or failure cases. Examples include an escaped reflection
+that should not trigger XSS, a page that returns status 200 for every path but
+does not contain a directory listing, an exact server version versus a bare
+product name, a weak header value, and an unreachable target. The suite also
+checks that malformed export input produces a report rather than terminating
+the request with an unhandled exception.
+
+These tests are targeted regression checks, not a representative benchmark.
+The practice target intentionally includes at least one example of each
+configured indicator, and the tests cover a limited collection of safe and
+edge-case responses. No labeled dataset was used to calculate precision,
+recall, false-positive rate, or false-negative rate. No scan-time measurements
+were collected. Accordingly, the result supports a claim of functional
+operation on the included fixtures only; it cannot support a general claim of
+effectiveness on arbitrary sites.
+
+\section{Discussion}
+The main engineering choice is to favor small, inspectable rules over broad
+automatic discovery. This makes each report explainable: a reader can trace a
+finding to a missing header, a matched version pattern, a directory-listing
+signature, a database error, or a raw reflected payload. The same simplicity
+limits the scanner. A rule can only identify cases represented by its selected
+paths, payloads, response signatures, and form parser. The reported severity
+is a static category attached to the rule, not a contextual risk calculation.
+
+The regression history also shows why scanner output needs carefully scoped
+wording. A response code alone was insufficient for directory-listing
+detection, and searching for any echo of user input was insufficient for XSS.
+Requiring a body signature and matching the raw submitted XSS string improved
+these specific cases. They do not eliminate all false reports or missed
+findings. A browser-based assessment, more varied targets, and independent
+manual review would be needed to evaluate broader behavior.
+
+The current implementation uses an eight-second HTTP timeout and caps each
+response body at two megabytes. It disables TLS certificate verification to
+support self-signed laboratory targets. This improves compatibility with
+practice environments but removes certificate identity validation from HTTPS
+requests. The application accepts any syntactically valid HTTP or HTTPS target;
+the scanner binds to loopback, but the target itself is not technically
+restricted. Operators must have permission to test any target they enter.
+
+\section{Limitations, Safety, and Future Work}
+The scanner accepts one HTTP or HTTPS URL and does not crawl linked pages,
+authenticate, or execute JavaScript. Consequently, pages behind a login and
+client-rendered forms are generally outside its coverage. A \texttt{pass}
+means only that the implemented heuristic did not identify a finding for the
+tested URL. It must not be interpreted as proof that the site is secure.
+
+The HTTP client currently disables TLS certificate verification to support
+self-signed certificates often used in local practice environments. The
+scanner sends active payloads, and the target URL is not restricted to
+loopback or private addresses. Testing should therefore be limited to systems
+for which the operator has explicit authorization. The Flask application is
+configured to bind to loopback for local use; it is not designed as a public
+scanning service.
+
+Possible extensions include a configurable crawl scope, optional
+authentication, browser automation for JavaScript-rendered pages, broader
+directory discovery, and additional SQL injection and XSS analysis. A separate
+research evaluation could use a labeled set of vulnerable and hardened targets
+to report precision, recall, and false-positive rates. These are extensions
+beyond the current prototype's defined scope.
+
+\section{Conclusion}
+This paper described a modular, rule-based web vulnerability scanner with a
+Flask interface, five basic checks, a shared HTTP and form layer, a downloadable
+report, and a local vulnerable practice target. Its project documentation
+reports successful operation against that fixture and includes automated
+tests. The implementation is useful for demonstrating how response-based
+checks can be organized and explained, while its narrow coverage and heuristic
+matching limit conclusions about real-world security. Broader testing,
+authentication and JavaScript support, TLS verification, and a reproducible
+labeled evaluation are appropriate next steps.
+
+\begin{thebibliography}{00}
+
+\bibitem{owaspTop10}
+OWASP Foundation, ``OWASP Top 10:2021,'' 2021. [Online]. Available:
+\url{https://owasp.org/Top10/2021/}. [Accessed: Oct. 24, 2026].
+
+\bibitem{wstgSQLi}
+OWASP Foundation, ``SQL Injection,'' OWASP Web Security Testing Guide, latest
+online edition. [Online]. Available:
+\url{https://wstg.owasp.org/latest/4-Web_Application_Security_Testing/07-Injection/05-SQL_Injection/}.
+ [Accessed: Oct. 24, 2026].
+
+\bibitem{wstgXSS}
+OWASP Foundation, ``Reflected Cross Site Scripting,'' OWASP Web Security
+Testing Guide, latest online edition. [Online]. Available:
+\url{https://wstg.owasp.org/latest/4-Web_Application_Security_Testing/07-Injection/01-Reflected_Cross_Site_Scripting/}.
+ [Accessed: Oct. 24, 2026].
+
+\bibitem{csp3}
+M. West and A. Sartori, eds., ``Content Security Policy Level 3,'' W3C,
+Working Draft, Sep. 16, 2026. [Online]. Available:
+\url{https://www.w3.org/TR/CSP/}. [Accessed: Oct. 24, 2026].
+
+\bibitem{rfc6797}
+J. Hodges, C. Jackson, and A. Barth, ``HTTP Strict Transport Security
+(HSTS),'' RFC 6797, Nov. 2012. [Online]. Available:
+\url{https://www.rfc-editor.org/rfc/rfc6797}.
+
+\bibitem{owaspHeaders}
+OWASP Foundation, ``HTTP Headers Cheat Sheet,'' OWASP Cheat Sheet Series.
+[Online]. Available:
+\url{https://cheatsheetseries.owasp.org/cheatsheets/HTTP_Headers_Cheat_Sheet.html}.
+ [Accessed: Oct. 24, 2026].
+
+\bibitem{alazmi}
+S. Alazmi and D. Conte de Leon, ``A systematic literature review on the
+characteristics and effectiveness of web application vulnerability scanners,''
+\emph{IEEE Access}, vol. 10, pp. 33200--33219, 2022, doi:
+10.1109/ACCESS.2022.3161522.
+
+\bibitem{ibrahim}
+R. Y. Ibrahim and M. M. Rosli, ``Evaluation of web application vulnerability
+scanners using SQL injection attacks,'' in \emph{Proc. 2023 IEEE 8th Int. Conf.
+Recent Advances and Innovations in Engineering (ICRAIE)}, Kuala Lumpur,
+Malaysia, Dec. 2023, pp. 1--6, doi: 10.1109/ICRAIE59459.2023.10468295.
+
+\bibitem{projectReadme}
+``Lightweight Web Vulnerability Scanner,'' project README and source code,
+unpublished software project, 2026.
+
+\bibitem{manualVerification}
+``Manual Verification,'' project documentation, unpublished software project,
+Jul. 20, 2026.
+
+\end{thebibliography}
+\end{document}
